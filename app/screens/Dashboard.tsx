@@ -30,6 +30,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { supabase } from "../../supabaseConfig"; // Import Supabase client
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import Spinner from "react-native-loading-spinner-overlay"; // Import spinner library
+import checkPermission from "../../util/checkPermission";
 
 type RootStackParamList = {
   FolderDetail: { folderId: string; folderName: string };
@@ -111,6 +112,11 @@ const Dashboard = ({ navigation, route }: RouterProps) => {
 
     try {
       setLoading(true);
+      const permission_bool = await checkPermission("create");
+      if(!permission_bool){
+        Alert.alert("Error", "You do not have permission to create a folder");
+        return;
+      }
       const { data, error } = await supabase
         .from("folders")
         .insert([{ name: newFolderName, created_at: new Date() }])
@@ -177,6 +183,7 @@ const Dashboard = ({ navigation, route }: RouterProps) => {
     >
       <Spinner visible={loading} textContent="Loading..." textStyle={styles.spinnerTextStyle} />
       <PaperProvider>
+       
         <Appbar.Header>
           <Appbar.Content title={`Hello, ${userName}`} />
           <IconButton

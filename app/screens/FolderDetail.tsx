@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { View, StyleSheet, FlatList, TextInput } from "react-native";
+import { View, StyleSheet, FlatList, TextInput, TouchableWithoutFeedback, Alert } from "react-native";
 import { NavigationProp, RouteProp } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
 import { decode } from "base64-arraybuffer";
@@ -22,7 +22,8 @@ import { supabase } from "../../supabaseConfig"; // Import Supabase client
 import axios from "axios";
 import ImageViewing from "react-native-image-viewing"; // Import image viewing library
 import Spinner from "react-native-loading-spinner-overlay"; // Import the spinner library
-
+import checkPermission from "../../util/checkPermission";
+import Toast, { BaseToast, ErrorToast } from 'react-native-toast-message';
 type RootStackParamList = {
   FolderDetail: { folderId: string; folderName: string };
 };
@@ -43,7 +44,7 @@ const FolderDetail = ({ navigation, route }: RouterProps) => {
   const [isViewerVisible, setIsViewerVisible] = useState(false); // Full-screen viewer visibility
   const [selectedImageIndex, setSelectedImageIndex] = useState(0); // Index of the selected image
   const [folderName, setFolderName] = useState(route.params.folderName);
-
+ 
   const [isRenameModalVisible, setRenameModalVisible] = useState(false); // Modal visibility
   const [newFolderName, setNewFolderName] = useState(""); // New folder name
 
@@ -73,7 +74,6 @@ const FolderDetail = ({ navigation, route }: RouterProps) => {
       console.error("Unexpected error:", err);
     }
   };
-
   const handleRenameConfirm = () => {
     if (newFolderName.trim()) {
       updateFolderName(newFolderName.trim());
@@ -103,6 +103,13 @@ const FolderDetail = ({ navigation, route }: RouterProps) => {
 
   const uploadImageToSupabase = async (imageUri: string) => {
     try {
+      const permission_bool = await checkPermission('upload');
+      if (!permission_bool){
+        Alert.alert('Error', 'You do not have permission to upload images.');
+        return;
+      }
+      console.log(permission_bool);
+
       const fileName = `${Date.now()}_${imageUri.split("/").pop()}`;
       const base64 = await FileSystem.readAsStringAsync(imageUri, {
         encoding: FileSystem.EncodingType.Base64,
@@ -212,26 +219,63 @@ const FolderDetail = ({ navigation, route }: RouterProps) => {
     }
   };
   const renderImageItem = ({ item, index }: { item: any; index: number }) => (
-    <Card
-      style={styles.imageCard}
-      onPress={() => {
-        setSelectedImageIndex(index); // Set the selected image index
-        setIsViewerVisible(true); // Show the full-screen viewer
-      }}
-    >
-      <Card.Cover source={{ uri: item.uri }} style={styles.image} />
+    <Card style={styles.imageCard}>
+      <TouchableWithoutFeedback
+        onPress={() => {
+          setSelectedImageIndex(index);
+          setIsViewerVisible(true);
+        }}
+      >
+        <Card.Cover source={{ uri: item.uri }} style={styles.image} />
+      </TouchableWithoutFeedback>
       <Card.Title
-        title={item.id}
+        title={`Image ${index + 1}`}
         right={(props) => (
           <IconButton
             {...props}
-            icon="dots-vertical"
-            onPress={() => console.log("Image options")}
+            icon="delete"
+            onPress={() => handleDeleteImage(item)}
           />
         )}
       />
     </Card>
   );
+  const handleDeleteImage = async (image: any) => {
+    try {
+      const permission_bool = await checkPermission('delete');
+      if(!permission_bool){
+        Alert.alert('Error', 'You do not have permission to delete images.');
+        return;
+      }
+      setLoading(true); // Show spinner during deletion
+  
+      // Step 1: Delete the image from Supabase storage
+      const filePath = image.uri.split("/").pop(); // Extract file name from URL
+      const { error: storageError } = await supabase.storage
+        .from("images")
+        .remove([`folder_${folderId}/${filePath}`]);
+  
+      if (storageError) throw storageError;
+  
+      // Step 2: Delete the image entry from the database
+      const { error: dbError } = await supabase
+        .from("images")
+        .delete()
+        .eq("id", image.id);
+  
+      if (dbError) throw dbError;
+  
+      // Step 3: Update the local state
+      setImages((prevImages) => prevImages.filter((img) => img.id !== image.id));
+  
+      console.log("Image deleted successfully.");
+    } catch (error) {
+      console.error("Error deleting image:", error);
+    } finally {
+      setLoading(false); // Hide spinner after deletion
+    }
+  };
+    
   const deleteFolder = async () => {
     try {
       // Step 1: List all files in the folder
@@ -289,7 +333,6 @@ const FolderDetail = ({ navigation, route }: RouterProps) => {
   };
   
   
-  
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <PaperProvider>
@@ -323,7 +366,6 @@ const FolderDetail = ({ navigation, route }: RouterProps) => {
             </View>
           </Modal>
         </Portal>
-
         <Spinner
           visible={loading} // Bind spinner visibility to the loading state
           textContent={"Uploading..."}

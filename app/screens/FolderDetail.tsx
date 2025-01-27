@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { View, StyleSheet, FlatList, TextInput, TouchableWithoutFeedback, Alert } from "react-native";
 import { NavigationProp, RouteProp } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
+import * as ImageManipulator from  'expo-image-manipulator';
 import { decode } from "base64-arraybuffer";
 import {
   Appbar,
@@ -19,7 +20,6 @@ import {
 import * as FileSystem from "expo-file-system";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { supabase } from "../../supabaseConfig"; // Import Supabase client
-import axios from "axios";
 import ImageViewing from "react-native-image-viewing"; // Import image viewing library
 import Spinner from "react-native-loading-spinner-overlay"; // Import the spinner library
 import checkPermission from "../../util/checkPermission";
@@ -101,79 +101,88 @@ const FolderDetail = ({ navigation, route }: RouterProps) => {
     fetchImages();
   }, [folderId]);
 
+
+
+  const compressImage = async (uri: string) => {
+    const manipulatedImage = await ImageManipulator.manipulateAsync(
+      uri,
+      [{ resize: { width: 600 } }], // Resize to width 800px (adjust as needed)
+      { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG }
+    );
+    return manipulatedImage.uri;
+  };
+  
   const uploadImageToSupabase = async (imageUri: string) => {
     try {
-      const permission_bool = await checkPermission('upload');
-      if (!permission_bool){
-        Alert.alert('Error', 'You do not have permission to upload images.');
+      const permission_bool = await checkPermission("upload");
+      if (!permission_bool) {
+        Alert.alert("Error", "You do not have permission to upload images.");
         return;
       }
-      console.log(permission_bool);
-
-      const fileName = `${Date.now()}_${imageUri.split("/").pop()}`;
-      const base64 = await FileSystem.readAsStringAsync(imageUri, {
+  
+      // Compress the image
+      const compressedUri = await compressImage(imageUri);
+      const fileName = `${Date.now()}_${compressedUri.split("/").pop()}`;
+      const filePath = compressedUri.replace("file://", ""); // Remove `file://` prefix
+      const file = await FileSystem.readAsStringAsync(compressedUri, {
         encoding: FileSystem.EncodingType.Base64,
       });
-
-      const { data, error } = await supabase.storage
-        .from("images")
-        .createSignedUploadUrl(`folder_${folderId}/${fileName}`);
-
-      if (error) throw error;
-
-      const { signedUrl } = data;
-
-      await axios.put(signedUrl, decode(base64), {
-        headers: {
-          "Content-Type": "image/jpeg",
-        },
-      });
-
-      const publicUrlData = await supabase.storage
-        .from("images")
-        .getPublicUrl(`folder_${folderId}/${fileName}`);
-
-      const { data: imageData, error: imageError } = await supabase
-        .from("images")
-        .insert([
-          {
-            folder_id: folderId,
-            uri: publicUrlData?.data?.publicUrl,
-            uploaded_at: new Date(),
-          },
-        ])
-        .select();
-
-      if (imageError) throw imageError;
-
-      if (imageData && imageData.length > 0) {
-        const newImageId = imageData[0].id;
-
-        const { data: folderFetchData, error: folderFetchError } = await supabase
-          .from("folders")
-          .select("image_ids")
-          .eq("id", folderId)
-          .single();
-
-        if (folderFetchError) throw folderFetchError;
-
-        const currentImageIds = folderFetchData?.image_ids || [];
-        const updatedImageIds = [...currentImageIds, newImageId];
-
-        const { error: folderUpdateError } = await supabase
-          .from("folders")
-          .update({ image_ids: updatedImageIds })
-          .eq("id", folderId);
-
-        if (folderUpdateError) throw folderUpdateError;
-
-        console.log("Image uploaded and linked to folder");
-        setImages((prev) => [...prev, { id: newImageId, uri: publicUrlData?.data?.publicUrl }]);
-      }
+  
+      // Add to background queue
+      setImages((prev) => [
+        ...prev,
+        { id: `temp_${Date.now()}`, uri: compressedUri, uploading: true }, // Temporary UI entry
+      ]);
+  
+      // Perform upload in the background
+      setTimeout(async () => {
+        try {
+          const { data, error } = await supabase.storage
+            .from("images")
+            .upload(`folder_${folderId}/${fileName}`, decode(file), {
+              contentType: "image/jpeg",
+              upsert: false,
+            });
+  
+          if (error) throw error;
+  
+          const { data: publicUrlData } = supabase.storage
+            .from("images")
+            .getPublicUrl(`folder_${folderId}/${fileName}`);
+  
+          const { data: imageData, error: imageError } = await supabase
+            .from("images")
+            .insert([
+              {
+                folder_id: folderId,
+                uri: publicUrlData?.publicUrl,
+                uploaded_at: new Date(),
+              },
+            ])
+            .select();
+  
+          if (imageError) throw imageError;
+  
+          if (imageData && imageData.length > 0) {
+            setImages((prev) =>
+              prev.map((img) =>
+                img.uri === compressedUri ? { ...img, id: imageData[0].id, uploading: false } : img
+              )
+            );
+          }
+        } catch (uploadError) {
+          console.error("Upload failed:", uploadError);
+          setImages((prev) => prev.filter((img) => img.uri !== compressedUri)); // Remove failed uploads
+          Alert.alert("Upload Failed", "An error occurred while uploading the image.");
+        }
+      }, 0); // Offload to the background
     } catch (error) {
-      console.error("Error uploading image:", error);
+      console.error("Error preparing image for upload:", error);
     }
   };
+  
+  
+  
 
   const pickImage = async () => {
     try {
@@ -184,16 +193,14 @@ const FolderDetail = ({ navigation, route }: RouterProps) => {
       });
 
       if (!result.canceled && result.assets?.length > 0) {
-        setLoading(true); // Show spinner during upload
+      
         for (const asset of result.assets) {
           await uploadImageToSupabase(asset.uri);
         }
       }
     } catch (error) {
       console.error("Error picking/uploading images:", error);
-    } finally {
-      setLoading(false); // Hide spinner after upload
-    }
+    } 
   };
   const takePhoto = async () => {
     try {
@@ -222,24 +229,35 @@ const FolderDetail = ({ navigation, route }: RouterProps) => {
     <Card style={styles.imageCard}>
       <TouchableWithoutFeedback
         onPress={() => {
-          setSelectedImageIndex(index);
-          setIsViewerVisible(true);
+          if (!item.uploading) {
+            setSelectedImageIndex(index);
+            setIsViewerVisible(true);
+          }
         }}
       >
-        <Card.Cover source={{ uri: item.uri }} style={styles.image} />
-      </TouchableWithoutFeedback>
-      <Card.Title
-        title={`Image ${index + 1}`}
-        right={(props) => (
-          <IconButton
-            {...props}
-            icon="delete"
-            onPress={() => handleDeleteImage(item)}
-          />
+        {item.uploading ? (
+          <View style={[styles.image, styles.uploadingOverlay]}>
+            <Spinner visible={true} textContent={"Uploading..."} textStyle={styles.spinnerText} />
+          </View>
+        ) : (
+          <Card.Cover source={{ uri: item.uri }} style={styles.image} />
         )}
-      />
+      </TouchableWithoutFeedback>
+      {!item.uploading && (
+        <Card.Title
+          title={`Image ${index + 1}`}
+          right={(props) => (
+            <IconButton
+              {...props}
+              icon="delete"
+              onPress={() => handleDeleteImage(item)}
+            />
+          )}
+        />
+      )}
     </Card>
   );
+  
   const handleDeleteImage = async (image: any) => {
     try {
       const permission_bool = await checkPermission('delete');
@@ -264,7 +282,14 @@ const FolderDetail = ({ navigation, route }: RouterProps) => {
         .eq("id", image.id);
   
       if (dbError) throw dbError;
-  
+
+      // delete the image from the folder
+      
+      const updated_image_ids = images.map((img) => img.id).filter((id) => id !== image.id);
+      const { error: folderError } = await supabase
+        .from("folders")
+        .update({ image_ids: updated_image_ids })
+        .eq("id", folderId);
       // Step 3: Update the local state
       setImages((prevImages) => prevImages.filter((img) => img.id !== image.id));
   
@@ -446,6 +471,23 @@ const styles = StyleSheet.create({
   modalTitle: {
     fontSize: 18,
     marginBottom: 10,
+  },
+  uploadingOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0, 0, 0, 0.5)", // Semi-transparent background
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 1, // Ensure it's above other components
+  },
+
+  uploadingText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "bold",
   },
   input: {
     borderWidth: 1,

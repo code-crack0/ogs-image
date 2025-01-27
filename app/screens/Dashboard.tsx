@@ -184,14 +184,22 @@ const Dashboard = ({ navigation, route }: RouterProps) => {
       <Spinner visible={loading} textContent="Loading..." textStyle={styles.spinnerTextStyle} />
       <PaperProvider>
        
-        <Appbar.Header>
-          <Appbar.Content title={`Hello, ${userName}`} />
-          <IconButton
-            icon="logout"
-            onPress={() => handleLogout()}
-            size={24}
-          />
-        </Appbar.Header>
+      <Appbar.Header>
+  <Appbar.Content title={`Hello, ${userName}`} />
+  <IconButton
+    icon="refresh"
+    onPress={() => {
+      setLoading(true);
+      fetchFolders(sortOrder).finally(() => setLoading(false));
+    }}
+    size={24}
+  />
+  <IconButton
+    icon="logout"
+    onPress={() => handleLogout()}
+    size={24}
+  />
+</Appbar.Header>
         <View style={styles.content}>
           <Searchbar
             placeholder="Search folders"
